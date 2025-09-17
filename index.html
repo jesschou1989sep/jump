@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Facebook App 直開連結產生器｜Linktree 可用</title>
-  <meta name="description" content="將任何 Facebook 連結轉為可嘗試直接用 Facebook App 開啟的連結，放進 Linktree / IG / FB 內建瀏覽器也可用。" />
+  <title>外部瀏覽器跳轉版｜Facebook 直開連結產生器</title>
+  <meta name="description" content="在 Facebook/Instagram 內建瀏覽器點擊時，先嘗試跳到外部瀏覽器（Chrome/Safari），再回到本頁完成目標跳轉；可放 Linktree 使用。" />
   <style>
     :root{--bg:#0b0f15;--fg:#e8eef7;--muted:#97a3b6;--card:#121826;--accent:#5ab0ff;--ok:#51d37a;--err:#ff7a7a}
     *{box-sizing:border-box}html,body{height:100%}
@@ -22,76 +22,159 @@
     .muted{color:var(--muted)}
     .badge{display:inline-block;padding:4px 8px;border-radius:999px;border:1px solid #2c3649;color:#a9b8d6;font-size:12px}
     .hide{display:none}
-    .success{color:var(--ok)}
-    .error{color:var(--err)}
+    .success{color:var(--ok)} .error{color:var(--err)}
     .mini{font-size:12px;color:#a4b4d2}
-    .center{display:flex;align-items:center;justify-content:center;height:60vh;text-align:center}
   </style>
   <script>
-    // --- Redirect Mode (visit with ?u=...) ---
-    (function immediateRedirect(){
+    // ===== Helper: UA / environment checks =====
+    const UA = navigator.userAgent || '';
+    const isAndroid = /Android/i.test(UA);
+    const isIOS = /iPhone|iPad|iPod/i.test(UA);
+    const isFBIAB = /(FBAN|FBAV|FB_IAB)/i.test(UA);     // Facebook/IG 內建瀏覽器常見標記
+    const isIGIAB = /(Instagram)/i.test(UA);
+    const isInApp = isFBIAB || isIGIAB;
+
+    // Convert current URL to absolute (no query/hash overwrite helper)
+    function absoluteBaseURL() {
+      const url = new URL(location.href);
+      url.search = '';
+      url.hash = '';
+      return url.toString();
+    }
+    function buildURL(params) {
+      const base = new URL(absoluteBaseURL());
+      for (const [k, v] of Object.entries(params)) base.searchParams.set(k, v);
+      return base.toString();
+    }
+
+    function toChromeIntent(targetURL) {
+      const encoded = encodeURIComponent(targetURL);
+      return `intent://${location.host}${location.pathname}?ext=1&u=${encodeURIComponent(targetURL)}#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=${encoded};end`;
+    }
+    function toGoogleChromeScheme(httpsURL) {
+      // iOS：用 googlechrome:// 方案（需裝 Chrome 才能跳）
+      if (/^https:\/\//i.test(httpsURL)) return httpsURL.replace(/^https:\/\//i, 'googlechrome://');
+      if (/^http:\/\//i.test(httpsURL)) return httpsURL.replace(/^http:\/\//i, 'googlechrome://');
+      return null;
+    }
+
+    // ===== Stage A: Redirect Mode —— handle ?u=... =====
+    (function mainRouter() {
       const q = new URLSearchParams(location.search);
-      const u = q.get('u');
-      if(!u) return; // not in redirect mode
-      // Try to open the Facebook app instantly. We render nothing.
-      const target = decodeURIComponent(u);
-      // Known trick that works in iOS/Android FB app: open facewebmodal to keep login context
-      const fbScheme = 'facebook://facewebmodal/f?href=' + encodeURIComponent(target);
-      const fbSchemeAlt = 'fb://facewebmodal/f?href=' + encodeURIComponent(target); // some Android variants
-      const fbIntent = 'intent://facewebmodal/f?href=' + encodeURIComponent(target) + '#Intent;scheme=fb;package=com.facebook.katana;end';
+      const u = q.get('u');           // 目標網址（可能為 Facebook 粉專/社團/貼文）
+      const ext = q.get('ext');       // 是否已在外部瀏覽器的回跳階段
+      const fbdeep = q.get('fbdeep'); // 是否已完成 FB Deep Link 流程
 
-      // Quick path: if we're already inside Facebook in-app browser, this should jump without needing timers.
-      const ua = navigator.userAgent || '';
-      const isAndroid = /Android/i.test(ua);
+      if (!u) return; // 沒有 redirect 參數，顯示產生器 UI
 
-      // Try scheme first
-      try { location.replace(fbScheme); } catch(e) {}
-
-      // Fallback chain
-      setTimeout(function(){
-        try { location.replace(fbSchemeAlt); } catch(e) {}
-      }, 120);
-
-      // Android intent fallback
-      if(isAndroid){
-        setTimeout(function(){ location.replace(fbIntent); }, 250);
+      // Step 1) 若在 FB/IG 內建瀏覽器，先嘗試跳外部瀏覽器再回來（帶 ext=1）
+      if (isInApp && !ext) {
+        const returnURL = buildURL({ext: '1', u: u}); // 在外部瀏覽器回到本頁
+        if (isAndroid) {
+          // Android：用 intent 直呼 Chrome（若 Chrome 不可用，fallback 回本頁 URL，仍可能在 IAB，但盡力而為）
+          location.href = toChromeIntent(returnURL);
+          // 安全保險：0.8 秒後嘗試原頁 reload（若使用者取消或系統阻擋 intent）
+          setTimeout(() => { location.href = returnURL; }, 800);
+        } else if (isIOS) {
+          // iOS：嘗試以 Google Chrome scheme 開啟（需已安裝 Chrome）
+          const chromeURL = toGoogleChromeScheme(returnURL);
+          if (chromeURL) {
+            // 使用 iframe 以降低彈窗干擾
+            const a = document.createElement('a');
+            a.href = chromeURL;
+            document.body.appendChild(a);
+            a.click();
+          }
+          // 保底回跳（若未安裝 Chrome 或被阻擋）
+          setTimeout(() => { location.href = returnURL; }, 700);
+        } else {
+          // 其他環境：直接回跳
+          location.href = returnURL;
+        }
+        // 避免閃現 UI
+        document.documentElement.style.background = '#0b0f15';
+        document.body.innerHTML = '';
+        return;
       }
 
-      // Final hard fallback to the original https URL (web). Still keeps FB login if inside FB app.
-      setTimeout(function(){ location.replace(target); }, 700);
+      // Step 2) 已在外部瀏覽器（或不在 IAB）且帶 ext=1，執行真正的目標跳轉
+      if (ext) {
+        // 若目標為 Facebook 網址，預設用 FB App Deep Link；否則直接前往目標 https
+        const isFBURL = /^https?:\/\/(?:m\.)?(?:www\.)?facebook\.com\//i.test(decodeURIComponent(u));
 
-      // Prevent any flash of generator UI
+        if (isFBURL && !fbdeep) {
+          const target = decodeURIComponent(u);
+          const fbScheme = 'facebook://facewebmodal/f?href=' + encodeURIComponent(target);
+          const fbSchemeAlt = 'fb://facewebmodal/f?href=' + encodeURIComponent(target);
+          const fbIntent = 'intent://facewebmodal/f?href=' + encodeURIComponent(target) + '#Intent;scheme=fb;package=com.facebook.katana;end';
+
+          try { location.replace(fbScheme); } catch (e) {}
+          setTimeout(() => { try { location.replace(fbSchemeAlt); } catch (e) {} }, 120);
+          if (isAndroid) setTimeout(() => { location.replace(fbIntent); }, 250);
+          // 最終回退：仍在外部瀏覽器時，直接開原網址（保持外部瀏覽器環境）
+          setTimeout(() => { location.replace(target); }, 700);
+
+          // 避免閃 UI
+          document.documentElement.style.background = '#0b0f15';
+          document.body.innerHTML = '';
+          return;
+        } else {
+          // 非 Facebook 連結或已嘗試 Deep Link：直接前往原網址
+          location.replace(decodeURIComponent(u));
+          document.documentElement.style.background = '#0b0f15';
+          document.body.innerHTML = '';
+          return;
+        }
+      }
+
+      // Step 3) 不在 IAB 或無 ext：直接執行舊有跳轉（保持行為一致）
+      // （此分支多半是直接在外部瀏覽器點到含 ?u= 的連結）
+      const target = decodeURIComponent(u);
+      const isFBURL = /^https?:\/\/(?:m\.)?(?:www\.)?facebook\.com\//i.test(target);
+      if (isFBURL) {
+        const fbScheme = 'facebook://facewebmodal/f?href=' + encodeURIComponent(target);
+        const fbSchemeAlt = 'fb://facewebmodal/f?href=' + encodeURIComponent(target);
+        const fbIntent = 'intent://facewebmodal/f?href=' + encodeURIComponent(target) + '#Intent;scheme=fb;package=com.facebook.katana;end';
+        try { location.replace(fbScheme); } catch (e) {}
+        setTimeout(() => { try { location.replace(fbSchemeAlt); } catch (e) {} }, 120);
+        if (isAndroid) setTimeout(() => { location.replace(fbIntent); }, 250);
+        setTimeout(() => { location.replace(target); }, 700);
+      } else {
+        location.replace(target);
+      }
       document.documentElement.style.background = '#0b0f15';
       document.body.innerHTML = '';
     })();
   </script>
 </head>
 <body>
-  <div id="app" class="container">
-    <div class="card" id="generator">
-      <h1>Facebook App 直開連結產生器</h1>
-      <p class="lead">把 <strong>粉專 / 私密社團 / 貼文</strong> 的網址貼上，產生一個 <span class="badge">Linktree 可用</span> 的中繼連結。當用戶在 <strong>Facebook App</strong> 內點擊時，將嘗試直接在 App 內開啟（避免跳到未登入的網頁）。</p>
+  <div class="container">
+    <div class="card">
+      <h1>外部瀏覽器跳轉版｜Facebook 直開連結產生器</h1>
+      <p class="lead">
+        需求：<strong>先跳外部瀏覽器</strong>（離開 FB/IG 內建瀏覽器），<strong>再回到本頁</strong>完成跳轉。<br>
+        作用：改善 Linktree/IG/FB 內建瀏覽器限制，增加直開 Facebook App 或於外部瀏覽器顯示之成功率。
+      </p>
 
-      <label for="fbUrl">貼上 Facebook 連結（例如：粉專、社團、貼文）</label>
-      <input type="url" id="fbUrl" placeholder="https://www.facebook.com/groups/xxxxxxxx 或 https://www.facebook.com/yourpage" inputmode="url" />
+      <label for="fbUrl">貼上 Facebook 或其他目的連結</label>
+      <input type="url" id="fbUrl" placeholder="https://www.facebook.com/groups/xxxxxxxx 或其他 https 連結" inputmode="url" />
 
       <div class="row">
-        <button id="gen">產生直開連結</button>
-        <button id="test" class="secondary">在本頁測試</button>
-        <button id="copy" class="ghost">複製連結</button>
+        <button id="gen">產生可放 Linktree 的連結</button>
+        <button class="secondary" id="test">在本頁測試</button>
+        <button class="ghost" id="copy">複製連結</button>
       </div>
 
       <div id="outWrap" class="hide" style="margin-top:14px">
-        <label for="out">產生結果（可放進 Linktree / IG Bio / 網站）</label>
+        <label for="out">結果（含外部瀏覽器跳轉機制）</label>
         <input type="text" id="out" readonly />
-        <p class="mini">提示：把上面這個連結放到 Linktree。使用者在 Facebook App 內點擊時，會嘗試以 App 直接開啟你的目標連結。</p>
         <p id="msg" class="mini"></p>
       </div>
 
       <hr style="border:0;border-top:1px solid #2c3649;margin:20px 0">
-      <p class="mini">注意：
-        <br>1) 若裝置未安裝 Facebook App，或系統限制自動喚起 App，將回退到原網址的網頁版。
-        <br>2) 私密社團仍須使用者已登入該 App 帳號方能查看（本工具的目的是避免跳到未登入的瀏覽器）。
+      <p class="mini">
+        備註：iOS 無法 100% 強制外開 Safari，程式會優先嘗試打開 Chrome（需已安裝），否則回退為在同視窗回跳；
+        Android 透過 intent 指定 Chrome，成功率較高。若使用者未裝目標 App，則會回退到原網址的網頁版。
       </p>
     </div>
   </div>
@@ -105,61 +188,48 @@
       const msg = $('#msg');
 
       function currentBase(){
-        // Generate link to this same page with ?u=... so it works after you upload to GitHub Pages
-        // Handles both /index.html and /repo-name/ paths
         const url = new URL(location.href);
-        // Keep only origin + pathname (strip any ?u=… if present)
         url.search = '';
         url.hash = '';
         return url.toString();
       }
-
       function makeLink(raw){
         if(!raw) return null;
         try{ new URL(raw); }catch(e){ return null; }
         const base = currentBase();
         const u = encodeURIComponent(raw);
+        // 注意：實際跳轉時若偵測為 IAB 會先導到 ext=1，再於外部瀏覽器內處理
         const link = base + (base.includes('?') ? '&' : '?') + 'u=' + u;
         return link;
       }
-
-      function copyToClipboard(text){
-        return navigator.clipboard?.writeText(text).then(()=>true).catch(()=>{
+      async function copyToClipboard(text){
+        try{
+          await (navigator.clipboard && navigator.clipboard.writeText(text));
+          return true;
+        }catch(e){
           const ta = document.createElement('textarea');
           ta.value = text; document.body.appendChild(ta); ta.select();
           const ok = document.execCommand('copy'); document.body.removeChild(ta); return ok;
-        });
+        }
       }
 
       $('#gen').addEventListener('click', ()=>{
         const link = makeLink(fbUrl.value.trim());
         msg.textContent = '';
-        if(!link){ msg.textContent = '請輸入有效的 Facebook 網址。'; msg.className='mini error'; outWrap.classList.add('hide'); return; }
-        out.value = link; outWrap.classList.remove('hide'); msg.textContent = '已產生直開連結。'; msg.className='mini success';
+        if(!link){ msg.textContent = '請輸入有效的網址。'; msg.className='mini error'; outWrap.classList.add('hide'); return; }
+        out.value = link; outWrap.classList.remove('hide'); msg.textContent = '已產生。放入 Linktree 後，在 FB/IG 內建瀏覽器點擊會先嘗試外開，再完成跳轉。'; msg.className='mini success';
       });
-
       $('#copy').addEventListener('click', async()=>{
         if(!out.value){ msg.textContent='請先產生連結。'; msg.className='mini error'; return; }
         const ok = await copyToClipboard(out.value);
         msg.textContent = ok ? '已複製！' : '複製失敗，請手動複製。';
         msg.className = ok ? 'mini success' : 'mini error';
       });
-
       $('#test').addEventListener('click', ()=>{
         const link = makeLink(fbUrl.value.trim());
-        if(!link){ msg.textContent = '請輸入有效的 Facebook 網址。'; msg.className='mini error'; return; }
-        location.href = link; // navigate into redirect mode
+        if(!link){ msg.textContent = '請輸入有效的網址。'; msg.className='mini error'; return; }
+        location.href = link;
       });
-
-      // Quality-of-life: auto-fill from clipboard if it already contains a FB URL
-      (async function tryReadClipboard(){
-        try{
-          const txt = await navigator.clipboard.readText();
-          if(/^https?:\/\/(?:m\.)?(?:www\.)?facebook\.com\//i.test(txt)){
-            fbUrl.value = txt.trim();
-          }
-        }catch(e){}
-      })();
     })();
   </script>
 </body>
